@@ -20,8 +20,11 @@ defmodule RealtimeWeb.UserSocket do
   def connect(params, socket) do
     case Application.fetch_env!(:realtime, :secure_channels)
          |> authorize_conn(params) do
-      :ok -> {:ok, socket}
-      _ -> :error
+      :ok ->
+        {:ok, socket}
+
+      _ ->
+        :error
     end
   end
 

@@ -63,26 +63,21 @@ defmodule Realtime.Application do
 
     # List all child processes to be supervised
     children = [
-      # Start the endpoint when the application starts
-      RealtimeWeb.Endpoint,
+      Realtime.SubscriptionMonitor,
       {
         Phoenix.PubSub,
         name: Realtime.PubSub, adapter: Phoenix.PubSub.PG2
       },
+      RealtimeWeb.Endpoint,
       {
         Realtime.ConfigurationManager,
         filename: configuration_file
       },
       {
-        Realtime.DatabaseReplicationSupervisor,
-        # You can provide a different WAL position if desired, or default to
-        # allowing Postgres to send you what it thinks you need
-        epgsql_params: epgsql_params,
-        publications: publications,
-        slot_name: slot_name,
-        wal_position: {"0", "0"},
-        max_replication_lag_in_mb: max_replication_lag_in_mb
-      }
+        Postgrex,
+        Keyword.put(Application.get_env(:realtime, :db), :name, Postgrex)
+      },
+      Realtime.Replication
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

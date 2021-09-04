@@ -51,6 +51,8 @@ db_ip_version =
   %{"ipv4" => :inet, "ipv6" => :inet6}
   |> Map.fetch(System.get_env("DB_IP_VERSION", "") |> String.downcase())
 
+replication_poll_interval = String.to_integer(System.get_env("REPLICATION_POLL_INTERVAL", "300"))
+
 config :realtime,
   app_port: app_port,
   db_host: db_host,
@@ -66,7 +68,17 @@ config :realtime,
   secure_channels: secure_channels,
   jwt_secret: jwt_secret,
   jwt_claim_validators: jwt_claim_validators,
-  max_replication_lag_in_mb: max_replication_lag_in_mb
+  max_replication_lag_in_mb: max_replication_lag_in_mb,
+  replication_poll_interval: replication_poll_interval
+
+config :realtime,
+  db: [
+    hostname: db_host,
+    username: db_user,
+    password: db_password,
+    database: db_name,
+    port: db_port
+  ]
 
 config :realtime, RealtimeWeb.Endpoint,
   http: [:inet6, port: app_port],
