@@ -1,4 +1,4 @@
--- Copied from https://github.com/supabase/walrus/blob/c0c84884e390ec143ee0420e4db2cee7644d418d/sql/setup.sql
+-- Copied from https://github.com/supabase/walrus/blob/784dddcd829d47e04509a84f3aa32ab614ddf5a4/sql/setup.sql
 
 /*
     SETUP

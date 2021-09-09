@@ -1,4 +1,4 @@
--- Copied from https://github.com/supabase/walrus/blob/c0c84884e390ec143ee0420e4db2cee7644d418d/sql/walrus--0.1.sql
+-- Copied from https://github.com/supabase/walrus/blob/784dddcd829d47e04509a84f3aa32ab614ddf5a4/sql/walrus--0.1.sql
 
 /*
     WALRUS:
@@ -94,6 +94,8 @@ create table cdc.subscription (
     -- Tracks which users are subscribed to each table
     id bigint not null generated always as identity,
     user_id uuid not null references auth.users(id),
+    -- Populated automatically by trigger. Required to enable auth.email()
+    email varchar(255),
     entity regclass not null,
     filters cdc.user_defined_filter[] not null default '{}',
     created_at timestamp not null default timezone('utc', now()),
@@ -129,6 +131,9 @@ begin
         end if;
         -- raises an exception if value is not coercable to type
         perform format('select %s::%I', filter.value, col_type);
+
+        -- Avoids the 'authenticated' role requiring access to auth.users
+        new.email = (select u.email from auth.users u where u.id = new.user_id);
     end loop;
 
     -- Apply consistent order to filters so the unique constraint on
@@ -304,6 +309,35 @@ create type cdc.wal_rls as (
 );
 
 
+
+create or replace function cdc.is_visible_through_filters(columns cdc.wal_column[], filters cdc.user_defined_filter[])
+    returns bool
+    language sql
+    immutable
+as $$
+/*
+Should the record be visible (true) or filtered out (false) after *filters* are applied
+*/
+    select
+        -- Default to allowed when no filters present
+        coalesce(
+            sum(
+                cdc.check_equality_op(
+                    op:=f.op,
+                    type_:=col.type::regtype,
+                    val_1:=col.value,
+                    val_2:=f.value
+                )::int
+            ) = count(1),
+            true
+        )
+    from
+        unnest(filters) f
+        join unnest(columns) col
+            on f.column_name = col.name;
+$$;
+
+
 create or replace function cdc.apply_rls(wal jsonb)
     returns cdc.wal_rls
     language plpgsql
@@ -317,7 +351,7 @@ Append keys describing user visibility to each change
     "is_rls_enabled": true,
 }
 
-Example *change:
+Example *change*:
 {
     "change": [
         {
@@ -368,6 +402,7 @@ declare
 
     -- UUIDs of subscribed users who may view the change
     user_id uuid;
+    email varchar(255);
     user_has_access bool;
     visible_to_user_ids uuid[] = '{}';
 
@@ -415,6 +450,28 @@ begin
         )::cdc.wal_rls;
     end if;
 
+    -- Deletes are public but only expose primary key info
+    if action = 'D' then
+        -- Example wal input: {"action":"D","schema":"public","table":"notes","identity":[{"name":"id","type":"bigint","value":1}],"pk":[{"name":"id","type":"bigint"}]}
+        -- Filters may have been applied to
+        for user_id, filters in select subs.user_id, subs.filters from unnest(subscriptions) subs
+        loop
+            -- Check if filters exclude the record
+            allowed_by_filters = cdc.is_visible_through_filters(columns, filters);
+            if allowed_by_filters then
+                visible_to_user_ids = visible_to_user_ids || user_id;
+            end if;
+        end loop;
+
+        return (
+            -- Remove 'pk'
+            (wal #- '{pk}'),
+            is_rls_enabled,
+            visible_to_user_ids,
+            errors
+        )::cdc.wal_rls;
+    end if;
+
     -- create a prepared statement to check the existence of the wal record by primray key
     if (select count(*) from pg_prepared_statements where name = 'walrus_rls_stmt') > 0 then
         deallocate walrus_rls_stmt;
@@ -422,34 +479,15 @@ begin
     execute cdc.build_prepared_statement_sql('walrus_rls_stmt', entity_, columns);
 
     -- Set role to "authenticated"
-    perform set_config('role', 'authenticated', true);
+    perform
+        set_config('role', 'authenticated', true),
+        set_config('request.jwt.claim.role', 'authenticated', true);
 
     -- For each subscribed user
-    for user_id, filters in select subs.user_id, subs.filters from unnest(subscriptions) subs
+    for user_id, email, filters in select subs.user_id, subs.email, subs.filters from unnest(subscriptions) subs
     loop
         -- Check if the user defined filters exclude the current record
-        allowed_by_filters = true;
-
-        if array_length(filters, 1) > 0 then
-            select
-                -- Default to allowed when no filters present
-                coalesce(
-                    sum(
-                        cdc.check_equality_op(
-                            op:=f.op,
-                            type_:=col.type::regtype,
-                            val_1:=col.value,
-                            val_2:=f.value
-                        )::int
-                    ) = count(1),
-                    true
-                )
-            from
-                unnest(filters) f
-                join unnest(columns) col
-                    on f.column_name = col.name
-            into allowed_by_filters;
-        end if;
+        allowed_by_filters = cdc.is_visible_through_filters(columns, filters);
 
         -- If the user defined filters did not exclude the record
         if allowed_by_filters then
@@ -458,7 +496,9 @@ begin
             -- Deletes are public
             if is_rls_enabled and action <> 'D' then
                 -- Impersonate the subscribed user
-                perform set_config('request.jwt.claim.sub', user_id::text, true);
+                perform
+                    set_config('request.jwt.claim.sub', user_id::text, true),
+                    set_config('request.jwt.claim.email', email::text, true);
                 -- Lookup record the record as subscribed user
                 execute 'execute walrus_rls_stmt' into user_has_access;
             else
@@ -502,5 +542,3 @@ begin
     )::cdc.wal_rls;
 end;
 $$;
-
-select * from pg_create_logical_replication_slot('realtime', 'wal2json');

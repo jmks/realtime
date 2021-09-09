@@ -10,8 +10,8 @@ defmodule Realtime.Replication do
 
   alias Realtime.Adapters.Changes.{
     NewRecord,
-    UpdatedRecord
-    # DeletedRecord
+    UpdatedRecord,
+    DeletedRecord
   }
 
   alias Realtime.SubscribersNotification
@@ -138,6 +138,41 @@ defmodule Realtime.Replication do
     end)
   end
 
-  defp transform_record(%{"wal" => %{"action" => "D"}}), do: nil
+  defp transform_record(%{
+         "errors" => errors,
+         "is_rls_enabled" => is_rls_enabled,
+         "users" => users,
+         "wal" => %{
+           "action" => "D",
+           "schema" => schema,
+           "table" => table,
+           "identity" => identity
+         }
+       }) do
+    record = %DeletedRecord{
+      type: "DELETE",
+      schema: schema,
+      table: table,
+      users: users,
+      is_rls_enabled: is_rls_enabled,
+      errors: errors,
+      columns: [],
+      old_record: %{}
+    }
+
+    Enum.reduce(identity, record, fn %{"name" => name, "type" => type, "value" => value}, acc ->
+      acc
+      |> Map.put(:columns, [%{type: type, name: name} | acc.columns])
+      |> Map.put(:old_record, Map.put(acc.old_record, name, value))
+    end)
+    |> Map.update!(:columns, &Enum.reverse(&1))
+    |> Map.update!(:errors, fn errors ->
+      case List.first(errors) do
+        nil -> nil
+        _ -> errors
+      end
+    end)
+  end
+
   defp transform_record(_), do: nil
 end
