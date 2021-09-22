@@ -542,3 +542,7 @@ begin
     )::cdc.wal_rls;
 end;
 $$;
+
+-- Create 'realtime' replication slot
+
+select * from pg_create_logical_replication_slot('realtime', 'wal2json');
